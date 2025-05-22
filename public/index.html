@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Message Scheduler</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #25d366 0%, #128c7e 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: 300;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+
+        .main-content {
+            padding: 30px;
+        }
+
+        .status-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-connected {
+            background: #25d366;
+        }
+
+        .status-disconnected {
+            background: #ff4757;
+        }
+
+        .qr-code {
+            margin: 20px 0;
+        }
+
+        .qr-code img {
+            max-width: 200px;
+            border: 1px solid #ddd;
+            border-radius: 10px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-top: 30px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #e1e8ed;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .card h3 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.4em;
+            font-weight: 500;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        select, input, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e1e8ed;
+            border-radius: 10px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+        }
+
+        select:focus, input:focus, textarea:focus {
+            outline: none;
+            border-color: #25d366;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #25d366 0%, #128c7e 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            width: 100%;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(37, 211, 102, 0.3);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ff4757 0%, #ff3838 100%);
+        }
+
+        .btn-danger:hover {
+            box-shadow: 0 5px 15px rgba(255, 71, 87, 0.3);
+        }
+
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 14px;
+            width: auto;
+        }
+
+        .scheduled-messages {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .message-item {
+            background: #f8f9fa;
+            border: 1px solid #e1e8ed;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 10px;
+            position: relative;
+        }
+
+        .message-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 10px;
+        }
+
+        .message-info h4 {
+            color: #333;
+            margin-bottom: 5px;
+            font-size: 1.1em;
+        }
+
+        .message-info p {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .message-text {
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 10px 0;
+            border-left: 4px solid #25d366;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+
+        .status-pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-sent {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-failed {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-missed {
+            background: #f1f3f4;
+            color: #5f6368;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #666;
+            padding: 40px 20px;
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            border: 1px solid #e1e8ed;
+            border-radius: 10px;
+            padding: 15px 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            z-index: 1000;
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+        }
+
+        .toast.show {
+            transform: translateX(0);
+        }
+
+        .toast.success {
+            border-left: 4px solid #25d366;
+        }
+
+        .toast.error {
+            border-left: 4px solid #ff4757;
+        }
+
+        @media (max-width: 768px) {
+            .grid {
+                grid-template-columns: 1fr;
+                gap: 20px;
+            }
+            
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .main-content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📱 WhatsApp Scheduler</h1>
+            <p>Schedule messages to be sent at specific times</p>
+        </div>
+        
+        <div class="main-content">
+            <div class="status-section">
+                <div id="status-display">
+                    <span class="status-indicator status-disconnected"></span>
+                    <span id="status-text">Connecting to WhatsApp...</span>
+                </div>
+                <div id="qr-section" style="display: none;">
+                    <p>Scan this QR code with WhatsApp:</p>
+                    <div class="qr-code">
+                        <img id="qr-image" src="" alt="QR Code">
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid">
+                <div class="card">
+                    <h3>📝 Schedule Message</h3>
+                    <form id="schedule-form">
+                        <div class="form-group">
+                            <label for="chat-select">Select Chat:</label>
+                            <select id="chat-select" required>
+                                <option value="">Choose a chat...</option>
+                            </select>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="message-text">Message:</label>
+                            <textarea id="message-text" placeholder="Enter your message here..." required></textarea>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="schedule-datetime">Schedule Time:</label>
+                            <input type="datetime-local" id="schedule-datetime" required>
+                        </div>
+                        
+                        <button type="submit" class="btn" id="schedule-btn" disabled>
+                            Schedule Message
+                        </button>
+                    </form>
+                </div>
+
+                <div class="card">
+                    <h3>📅 Scheduled Messages</h3>
+                    <div id="scheduled-messages" class="scheduled-messages">
+                        <div class="empty-state">
+                            <svg fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <p>No scheduled messages yet</p>
+                        </div>
+                    </div>
+                    <button class="btn" id="refresh-btn" style="margin-top: 15px;">
+                        🔄 Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize socket with explicit connection
+        const socket = io();
+        let isConnected = false;
+        let chats = [];
+        
+        // Add socket connection events for debugging
+        socket.on('connect', () => {
+            console.log('Socket.IO connected');
+            // Request current status after connection
+            socket.emit('status');
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('Socket.IO connection error:', error);
+        });
+
+        // DOM elements
+        const statusIndicator = document.querySelector('.status-indicator');
+        const statusText = document.getElementById('status-text');
+        const qrSection = document.getElementById('qr-section');
+        const qrImage = document.getElementById('qr-image');
+        const chatSelect = document.getElementById('chat-select');
+        const scheduleForm = document.getElementById('schedule-form');
+        const scheduleBtn = document.getElementById('schedule-btn');
+        const scheduledMessages = document.getElementById('scheduled-messages');
+        const refreshBtn = document.getElementById('refresh-btn');
+
+        // Socket events
+        socket.on('qr', (qrCode) => {
+            console.log('QR code received in frontend');
+            qrImage.src = qrCode;
+            qrSection.style.display = 'block';
+            updateStatus(false, 'Scan QR code with WhatsApp');
+        });
+
+        socket.on('authenticated', () => {
+            qrSection.style.display = 'none';
+            updateStatus(false, 'Authenticating...');
+        });
+
+        socket.on('client_ready', (data) => {
+            chats = data.chats;
+            updateChats();
+            updateStatus(true, 'Connected to WhatsApp');
+            loadScheduledMessages();
+        });
+
+        socket.on('disconnected', () => {
+            updateStatus(false, 'Disconnected from WhatsApp');
+            scheduleBtn.disabled = true;
+        });
+
+        socket.on('message_sent', (data) => {
+            showToast('Message sent successfully!', 'success');
+            loadScheduledMessages();
+        });
+
+        // Update connection status
+        function updateStatus(connected, message) {
+            isConnected = connected;
+            statusIndicator.className = `status-indicator ${connected ? 'status-connected' : 'status-disconnected'}`;
+            statusText.textContent = message;
+            scheduleBtn.disabled = !connected;
+        }
+
+        // Update chat dropdown
+        function updateChats() {
+            chatSelect.innerHTML = '<option value="">Choose a chat...</option>';
+            chats.forEach(chat => {
+                const option = document.createElement('option');
+                option.value = chat.id;
+                option.textContent = `${chat.name} ${chat.isGroup ? '(Group)' : ''}`;
+                chatSelect.appendChild(option);
+            });
+        }
+
+        // Load scheduled messages
+        async function loadScheduledMessages() {
+            try {
+                const response = await fetch('/api/scheduled-messages');
+                const messages = await response.json();
+                displayScheduledMessages(messages);
+            } catch (error) {
+                console.error('Error loading scheduled messages:', error);
+                showToast('Error loading scheduled messages', 'error');
+            }
+        }
+
+        // Display scheduled messages
+        function displayScheduledMessages(messages) {
+            if (messages.length === 0) {
+                scheduledMessages.innerHTML = `
+                    <div class="empty-state">
+                        <svg fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <p>No scheduled messages yet</p>
+                    </div>
+                `;
+                return;
+            }
+
+            scheduledMessages.innerHTML = messages.map(message => `
+                <div class="message-item">
+                    <div class="message-header">
+                        <div class="message-info">
+                            <h4>${message.chat_name}</h4>
+                            <p>📅 ${new Date(message.scheduled_time).toLocaleString()}</p>
+                        </div>
+                        <div>
+                            <span class="status-badge status-${message.status}">${message.status}</span>
+                            ${message.status === 'pending' ? `
+                                <button class="btn btn-danger btn-small" onclick="cancelMessage(${message.id})">
+                                    Cancel
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="message-text">${message.message}</div>
+                </div>
+            `).join('');
+        }
+
+        // Cancel scheduled message
+        async function cancelMessage(messageId) {
+            if (!confirm('Are you sure you want to cancel this scheduled message?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/scheduled-messages/${messageId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    showToast('Message cancelled successfully', 'success');
+                    loadScheduledMessages();
+                } else {
+                    throw new Error('Failed to cancel message');
+                }
+            } catch (error) {
+                console.error('Error cancelling message:', error);
+                showToast('Error cancelling message', 'error');
+            }
+        }
+
+        // Schedule form submission
+        scheduleForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const chatId = chatSelect.value;
+            const chatName = chatSelect.options[chatSelect.selectedIndex].text;
+            const message = document.getElementById('message-text').value;
+            const scheduledTime = document.getElementById('schedule-datetime').value;
+
+            if (!chatId || !message || !scheduledTime) {
+                showToast('Please fill in all fields', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/schedule-message', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        chatId,
+                        chatName,
+                        message,
+                        scheduledTime
+                    })
+                });
+
+                if (response.ok) {
+                    showToast('Message scheduled successfully!', 'success');
+                    scheduleForm.reset();
+                    loadScheduledMessages();
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to schedule message');
+                }
+            } catch (error) {
+                console.error('Error scheduling message:', error);
+                showToast(error.message || 'Error scheduling message', 'error');
+            }
+        });
+
+        // Refresh button
+        refreshBtn.addEventListener('click', loadScheduledMessages);
+
+        // Show toast notification
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span>${type === 'success' ? '✅' : '❌'}</span>
+                    <span>${message}</span>
+                </div>
+            `;
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => toast.classList.add('show'), 100);
+            setTimeout(() => {
+                toast.classList.remove('show');
+                setTimeout(() => document.body.removeChild(toast), 300);
+            }, 3000);
+        }
+
+        // Set minimum datetime to now
+        document.getElementById('schedule-datetime').min = new Date().toISOString().slice(0, 16);
+
+        // Add status event handler
+        socket.on('status', (data) => {
+            console.log('Status update received:', data);
+            if (data.ready) {
+                updateStatus(true, 'Connected to WhatsApp');
+                chats = data.chats;
+                updateChats();
+            } else if (data.qr) {
+                console.log('QR code found in status update');
+                qrImage.src = data.qr;
+                qrSection.style.display = 'block';
+                updateStatus(false, 'Scan QR code with WhatsApp');
+            } else {
+                updateStatus(false, 'Connecting to WhatsApp...');
+            }
+        });
+        
+        // Initialize
+        socket.emit('status');
+    </script>
+</body>
+</html>
