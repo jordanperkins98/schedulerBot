@@ -18,38 +18,49 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Handle auth directory for a fresh start
+// Handle auth directory - preserve sessions for reconnection
 const authDir = path.join(__dirname, '.wwebjs_auth');
 const cacheDir = path.join(__dirname, '.wwebjs_cache');
 
-// Clear auth and cache directories for a clean start
-if (fs.existsSync(authDir)) {
-    console.log('Removing existing auth directory for a fresh start...');
-    try {
-        fs.rmSync(authDir, { recursive: true, force: true });
-        console.log('Auth directory removed successfully');
-    } catch (err) {
-        console.error('Error removing auth directory:', err);
+// Only clear auth if explicitly requested via environment variable
+const FORCE_FRESH_AUTH = process.env.FORCE_FRESH_AUTH === 'true';
+
+if (FORCE_FRESH_AUTH) {
+    console.log('🔄 FORCE_FRESH_AUTH=true - Removing existing auth for fresh start...');
+    if (fs.existsSync(authDir)) {
+        try {
+            fs.rmSync(authDir, { recursive: true, force: true });
+            console.log('Auth directory removed successfully');
+        } catch (err) {
+            console.error('Error removing auth directory:', err);
+        }
+    }
+    if (fs.existsSync(cacheDir)) {
+        try {
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+            console.log('Cache directory removed successfully');
+        } catch (err) {
+            console.error('Error removing cache directory:', err);
+        }
+    }
+} else {
+    console.log('🔐 Preserving existing WhatsApp session for automatic reconnection...');
+    if (fs.existsSync(authDir)) {
+        console.log('✅ Found existing auth directory - will attempt to reconnect');
+    } else {
+        console.log('📱 No existing auth found - will show QR code for first-time setup');
     }
 }
 
-if (fs.existsSync(cacheDir)) {
-    console.log('Removing existing cache directory...');
-    try {
-        fs.rmSync(cacheDir, { recursive: true, force: true });
-        console.log('Cache directory removed successfully');
-    } catch (err) {
-        console.error('Error removing cache directory:', err);
-    }
-}
-
-// Create fresh auth directory
-console.log('Creating auth directory...');
+// Ensure auth directories exist
 fs.mkdirSync(authDir, { recursive: true });
+fs.mkdirSync(cacheDir, { recursive: true });
 
-// Initialize WhatsApp client with settings that have been tested and work
+// Initialize WhatsApp client with enhanced reconnection settings
 const client = new Client({
-    authStrategy: new LocalAuth(),
+    authStrategy: new LocalAuth({
+        dataPath: authDir
+    }),
     puppeteer: {
         headless: true,
         args: [
@@ -65,7 +76,10 @@ const client = new Client({
     },
     qrMaxRetries: 5,
     qrTimeoutMs: 45000,  // Increase QR timeout to 45 seconds
-    authTimeoutMs: 60000 // Increase auth timeout to 60 seconds
+    authTimeoutMs: 60000, // Increase auth timeout to 60 seconds
+    restartOnAuthFail: true, // Restart on auth failure
+    takeoverOnConflict: true, // Take over if WhatsApp Web is open elsewhere
+    takeoverTimeoutMs: 30000 // Timeout for takeover
 });
 
 // Initialize SQLite database
@@ -87,6 +101,10 @@ db.serialize(() => {
 let clientReady = false;
 let qrCodeString = '';
 let chats = [];
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 5;
+let reconnectTimeout = null;
+let isReconnecting = false;
 
 // WhatsApp client events
 client.on('qr', async (qr) => {
@@ -113,6 +131,14 @@ client.on('qr', async (qr) => {
 client.on('ready', async () => {
     console.log('WhatsApp client is ready!');
     clientReady = true;
+    
+    // Reset reconnection state on successful connection
+    reconnectAttempts = 0;
+    isReconnecting = false;
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
     
     try {
         // Get all chats
@@ -148,7 +174,49 @@ client.on('auth_failure', (error) => {
 client.on('disconnected', (reason) => {
     console.log('WhatsApp client disconnected:', reason);
     clientReady = false;
-    io.emit('disconnected', { reason });
+    qrCodeString = '';
+    chats = [];
+    
+    // Emit disconnection to all connected clients
+    io.emit('disconnected', { reason, reconnectAttempts, maxReconnectAttempts });
+    
+    // Attempt automatic reconnection
+    if (!isReconnecting && reconnectAttempts < maxReconnectAttempts) {
+        isReconnecting = true;
+        reconnectAttempts++;
+        
+        const reconnectDelay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Exponential backoff, max 30s
+        console.log(`🔄 Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts}) in ${reconnectDelay/1000} seconds...`);
+        
+        io.emit('reconnecting', { 
+            attempt: reconnectAttempts, 
+            maxAttempts: maxReconnectAttempts,
+            delay: reconnectDelay 
+        });
+        
+        reconnectTimeout = setTimeout(async () => {
+            try {
+                console.log(`🔄 Reconnection attempt ${reconnectAttempts}...`);
+                await client.initialize();
+                isReconnecting = false;
+            } catch (error) {
+                console.error('Reconnection failed:', error);
+                isReconnecting = false;
+                
+                if (reconnectAttempts >= maxReconnectAttempts) {
+                    console.log('❌ Max reconnection attempts reached. Manual intervention required.');
+                    io.emit('reconnect_failed', { 
+                        message: 'Max reconnection attempts reached. Please refresh the page or restart the application.' 
+                    });
+                }
+            }
+        }, reconnectDelay);
+    } else if (reconnectAttempts >= maxReconnectAttempts) {
+        console.log('❌ Max reconnection attempts reached. Manual intervention required.');
+        io.emit('reconnect_failed', { 
+            message: 'Max reconnection attempts reached. Please refresh the page or restart the application.' 
+        });
+    }
 });
 
 // Handle general errors
@@ -281,6 +349,113 @@ app.post('/api/send-message', async (req, res) => {
         console.error('Error sending message:', error);
         res.status(500).json({ error: 'Failed to send message' });
     }
+});
+
+// Manual reconnection endpoint
+app.post('/api/reconnect', async (req, res) => {
+    console.log('🔄 Manual reconnection requested');
+    
+    if (isReconnecting) {
+        return res.status(400).json({ error: 'Reconnection already in progress' });
+    }
+    
+    if (clientReady) {
+        return res.status(400).json({ error: 'Client is already connected' });
+    }
+    
+    try {
+        // Clear any existing reconnection timeout
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+        }
+        
+        // Reset reconnection attempts for manual reconnect
+        reconnectAttempts = 0;
+        isReconnecting = true;
+        
+        console.log('🔄 Starting manual reconnection...');
+        io.emit('reconnecting', { 
+            attempt: 1, 
+            maxAttempts: maxReconnectAttempts,
+            manual: true 
+        });
+        
+        await client.initialize();
+        isReconnecting = false;
+        
+        res.json({ message: 'Reconnection initiated successfully' });
+    } catch (error) {
+        console.error('Manual reconnection failed:', error);
+        isReconnecting = false;
+        res.status(500).json({ error: 'Reconnection failed', details: error.message });
+    }
+});
+
+// Reset session endpoint (force fresh QR)
+app.post('/api/reset-session', async (req, res) => {
+    console.log('🔄 Session reset requested');
+    
+    try {
+        // Destroy current client
+        if (client) {
+            await client.destroy();
+        }
+        
+        // Clear reconnection state
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+        }
+        
+        reconnectAttempts = 0;
+        isReconnecting = false;
+        clientReady = false;
+        qrCodeString = '';
+        chats = [];
+        
+        // Remove auth directories
+        if (fs.existsSync(authDir)) {
+            fs.rmSync(authDir, { recursive: true, force: true });
+        }
+        if (fs.existsSync(cacheDir)) {
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+        }
+        
+        // Recreate directories
+        fs.mkdirSync(authDir, { recursive: true });
+        fs.mkdirSync(cacheDir, { recursive: true });
+        
+        // Emit reset event
+        io.emit('session_reset');
+        
+        // Reinitialize client after a short delay
+        setTimeout(async () => {
+            try {
+                await client.initialize();
+                res.json({ message: 'Session reset successfully. New QR code will be generated.' });
+            } catch (error) {
+                console.error('Failed to reinitialize after reset:', error);
+                res.status(500).json({ error: 'Failed to reinitialize after reset' });
+            }
+        }, 2000);
+        
+    } catch (error) {
+        console.error('Session reset failed:', error);
+        res.status(500).json({ error: 'Session reset failed', details: error.message });
+    }
+});
+
+// Get connection status with detailed info
+app.get('/api/connection-status', (req, res) => {
+    res.json({
+        ready: clientReady,
+        reconnecting: isReconnecting,
+        reconnectAttempts: reconnectAttempts,
+        maxReconnectAttempts: maxReconnectAttempts,
+        hasAuth: fs.existsSync(path.join(authDir, 'session')),
+        qrAvailable: !!qrCodeString
+    });
 });
 
 // Function to schedule a message

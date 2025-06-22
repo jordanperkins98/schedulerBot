@@ -315,6 +315,10 @@
                     <span class="status-indicator status-disconnected"></span>
                     <span id="status-text">Connecting to WhatsApp...</span>
                 </div>
+                <div id="reconnect-options" style="display: none; margin-top: 15px;">
+                    <button id="reconnect-btn" class="btn" onclick="attemptReconnection()">🔄 Reconnect</button>
+                    <button id="reset-session-btn" class="btn btn-danger" onclick="resetSession()">🔄 Reset Session</button>
+                </div>
                 <div id="qr-section" style="display: none;">
                     <p>Scan this QR code with WhatsApp:</p>
                     <div class="qr-code">
@@ -416,9 +420,26 @@
             loadScheduledMessages();
         });
 
-        socket.on('disconnected', () => {
-            updateStatus(false, 'Disconnected from WhatsApp');
+        socket.on('disconnected', (data) => {
+            updateStatus(false, `Disconnected: ${data.reason}`);
             scheduleBtn.disabled = true;
+        });
+
+        socket.on('reconnecting', (data) => {
+            const message = data.manual 
+                ? 'Manual reconnection in progress...' 
+                : `Auto-reconnecting (${data.attempt}/${data.maxAttempts})...`;
+            updateStatus(false, message);
+        });
+
+        socket.on('reconnect_failed', (data) => {
+            updateStatus(false, 'Reconnection failed');
+            showReconnectOptions();
+        });
+
+        socket.on('session_reset', () => {
+            updateStatus(false, 'Session reset - waiting for new QR code...');
+            qrSection.style.display = 'none';
         });
 
         socket.on('message_sent', (data) => {
@@ -432,6 +453,14 @@
             statusIndicator.className = `status-indicator ${connected ? 'status-connected' : 'status-disconnected'}`;
             statusText.textContent = message;
             scheduleBtn.disabled = !connected;
+            
+            // Show/hide reconnection options based on connection state
+            if (connected) {
+                hideReconnectOptions();
+            } else if (message.includes('failed') || message.includes('Disconnected')) {
+                // Only show reconnect options if it's a failure or disconnect (not for normal connecting states)
+                setTimeout(showReconnectOptions, 2000); // Show after 2 seconds
+            }
         }
 
         // Update chat dropdown
@@ -578,6 +607,60 @@
                 toast.classList.remove('show');
                 setTimeout(() => document.body.removeChild(toast), 300);
             }, 3000);
+        }
+
+        // Show reconnection options
+        function showReconnectOptions() {
+            document.getElementById('reconnect-options').style.display = 'block';
+        }
+
+        // Hide reconnection options
+        function hideReconnectOptions() {
+            document.getElementById('reconnect-options').style.display = 'none';
+        }
+
+        // Attempt manual reconnection
+        async function attemptReconnection() {
+            try {
+                const response = await fetch('/api/reconnect', {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    showToast('Reconnection initiated...', 'success');
+                    hideReconnectOptions();
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Reconnection failed');
+                }
+            } catch (error) {
+                console.error('Error attempting reconnection:', error);
+                showToast(error.message || 'Failed to reconnect', 'error');
+            }
+        }
+
+        // Reset session (force new QR)
+        async function resetSession() {
+            if (!confirm('This will reset your WhatsApp session and require a new QR code scan. Continue?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/reset-session', {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    showToast('Session reset successfully', 'success');
+                    hideReconnectOptions();
+                } else {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Session reset failed');
+                }
+            } catch (error) {
+                console.error('Error resetting session:', error);
+                showToast(error.message || 'Failed to reset session', 'error');
+            }
         }
 
         // Set minimum datetime to now
